@@ -35,6 +35,25 @@ the surrounding `MetaM` environment.
 -/
 abbrev SasM := ReaderT Context <| StateT State SimpM
 
+/-- Fully elaborated simplifier inputs used by the `#sas` transformer. -/
+structure SimpSpec where
+  /-- Runtime simplifier configuration. -/
+  config : Simp.Config := { zeta := false, zetaDelta := false, iota := true }
+  /-- Simp theorem arrays passed to `Simp.mkContext`. -/
+  simpTheorems : Array SimpTheorems := #[]
+  /-- Simproc arrays passed to `Simp.mkDefaultMethodsCore`. -/
+  simprocs : Array Simprocs := #[]
+
+/-- Run a `SasM` computation with an already elaborated simplifier specification. -/
+def runSasMWith {α} (root : Name) (x : SasM α) (spec : SimpSpec) : MetaM (α × State) := do
+  let simpCtx ← Simp.mkContext
+    (config := spec.config)
+    (simpTheorems := spec.simpTheorems)
+  let simpState : Simp.State := {}
+  let simpMethods := Simp.mkDefaultMethodsCore spec.simprocs
+  let ((r, s), _) ← (StateT.run (x { root := root }) {}).run simpCtx simpState simpMethods
+  return (r, s)
+
 /--
 Run a `SasM` computation with the requested simp attributes.
 
@@ -42,15 +61,11 @@ The simplifier is configured conservatively: zeta reduction is disabled to avoid
 destroying let-sharing, while iota reduction is enabled so simple matches can
 compute when `simp` uses them.
 -/
-def runSasM {α} (root : Name) (x : SasM α) (attrs : Array Name := #[`simp]) : MetaM (α × State) := do
-  let simpCtx ← Simp.mkContext
-    (config := { zeta := false, zetaDelta := false, iota := true })
-    (simpTheorems := ← attrs.mapM getSimpTheoremsFor)
-  let simpState : Simp.State := {}
+def runSasM {α} (root : Name) (x : SasM α) (attrs : Array Name := #[`simp])
+    (config : Simp.Config := { zeta := false, zetaDelta := false, iota := true }) : MetaM (α × State) := do
+  let simpTheorems ← attrs.mapM getSimpTheoremsFor
   let simprocs ← attrs.mapM getSimprocsFor
-  let simpMethods := Simp.mkDefaultMethodsCore simprocs
-  let ((r, s), _) ← (StateT.run (x { root := root }) {}).run simpCtx simpState simpMethods
-  return (r, s)
+  runSasMWith root x { config, simpTheorems, simprocs }
 
 /--
 Generate a fresh name for a partial/static-argument specialization of `base`.

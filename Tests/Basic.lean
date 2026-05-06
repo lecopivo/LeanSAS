@@ -89,6 +89,38 @@ fun x y => x + y -/
 #guard_msgs in
 #print addWrap._spec
 
+def letExample (x : Nat) :=
+  let y := x + 1
+  let z := y + y
+  z + y
+
+#sas (config := { zeta := false }) letExample
+/-- info: def LeanSASTests.letExample._spec : Nat → Nat :=
+fun x =>
+  let y := x + 1;
+  let z := y + y;
+  z + y -/
+#guard_msgs in
+#print letExample._spec
+
+def letSpecialize (x : Nat) :=
+  let y := x + 1
+  let z := scaleAdd 3 y
+  z + y
+
+#sas (config := { zeta := false }) letSpecialize
+/-- info: def LeanSASTests.letSpecialize._spec : Nat → Nat :=
+fun x =>
+  let y := x + 1;
+  let z := scaleAdd_sas_2 y;
+  z + y -/
+#guard_msgs in
+#print letSpecialize._spec
+/-- info: def LeanSASTests.scaleAdd_sas_2 : Nat → Nat :=
+fun x => 3 * x + 1 -/
+#guard_msgs in
+#print scaleAdd_sas_2
+
 def boolNotNot (b : Bool) := !(!b)
 
 #sas boolNotNot
@@ -96,6 +128,25 @@ def boolNotNot (b : Bool) := !(!b)
 fun b => b -/
 #guard_msgs in
 #print boolNotNot._spec
+
+theorem custom_not_not (b : Bool) : !(!b) = b := by
+  cases b <;> rfl
+
+def boolNotNotOnly (b : Bool) := !(!b)
+
+#sas only [Bool.not_not] boolNotNotOnly
+/-- info: def LeanSASTests.boolNotNotOnly._spec : Bool → Bool :=
+fun b => b -/
+#guard_msgs in
+#print boolNotNotOnly._spec
+
+def boolNotNotNoSimp (b : Bool) := !(!b)
+
+#sas [-Bool.not_not] boolNotNotNoSimp
+/-- info: def LeanSASTests.boolNotNotNoSimp._spec : Bool → Bool :=
+fun b => !!b -/
+#guard_msgs in
+#print boolNotNotNoSimp._spec
 
 class SlowEnum (α : Type) where
   elems : List α
@@ -152,13 +203,6 @@ List.foldl (fun acc x => acc + smallCode x) 0 univFast -/
 #sas genericSum
 /-- info: def LeanSASTests.genericSum._spec : {α : Type} → [SlowEnum α] → (α → Nat) → Nat :=
 fun {α} [SlowEnum α] f => List.foldl (fun acc x => acc + f x) 0 univSlow -/
-#guard_msgs in
-#print genericSum._spec
-
-/--
-info: def LeanSASTests.genericSum._spec : {α : Type} → [SlowEnum α] → (α → Nat) → Nat :=
-fun {α} [SlowEnum α] f => List.foldl (fun acc x => acc + f x) 0 univSlow
--/
 #guard_msgs in
 #print genericSum._spec
 

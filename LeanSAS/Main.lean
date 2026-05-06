@@ -33,10 +33,11 @@ partial def transform (e : Expr) : SasM Expr := do
       lambdaTelescope e fun xs body => do
         let body ← transform body
         mkLambdaFVars xs body
-  | .letE n t v b nondep =>
+  | .letE n _t v b _nondep =>
       let v ← transform v
-      let b ← transform (b.instantiate1 v)
-      pure (.letE n t v b nondep)
+      withLetDecl n (← inferType v) v fun x => do
+        let b ← transform (b.instantiate1 x)
+        mkLetFVars #[x] b (generalizeNondepLet := false)
   | .proj _ _ s =>
       let s ← transform s
       let e := e.updateProj! s
@@ -148,12 +149,12 @@ where
       return e
 
 /--
-Specialize the definition named `fname` and add `fname._spec` to the environment.
+Specialize the definition named `fname` using an elaborated simplifier specification.
 
-Returns the top-level generated name together with generated callee
-specializations. This is the implementation behind `#sas`.
+This is the lower-level entry point used by the command elaborator after parsing
+`simp`-style configuration and arguments.
 -/
-def specializeConst (fname : Name) (attrs : Array Name := #[`simp]) : MetaM (Name × Array Name) := do
+def specializeConstWith (fname : Name) (simpSpec : SimpSpec) : MetaM (Name × Array Name) := do
   let .defnInfo info ← getConstInfo fname
     | throwError "#sas expects a definition, got {fname}"
   if ← isRecursiveDefinition fname then
@@ -164,7 +165,7 @@ def specializeConst (fname : Name) (attrs : Array Name := #[`simp]) : MetaM (Nam
 
   let lvls := info.levelParams.map Level.param
   let fn := Expr.const fname lvls
-  let (value, state) ← runSasM fname.getRoot (do
+  let (value, state) ← runSasMWith fname.getRoot (do
     let value ← forallTelescope info.type fun xs _ => do
       let rawBody ←
         try
@@ -173,7 +174,7 @@ def specializeConst (fname : Name) (attrs : Array Name := #[`simp]) : MetaM (Nam
           pure (mkAppN fn xs)
       let body ← transform rawBody
       mkLambdaFVars xs body >>= instantiateMVars
-    pure value) attrs
+    pure value) simpSpec
 
   unless ← isTypeCorrect value do
     throwError m!"generated top-level specialization is not type correct:{indentExpr value}"
@@ -187,5 +188,17 @@ def specializeConst (fname : Name) (attrs : Array Name := #[`simp]) : MetaM (Nam
     safety := .safe
   }
   return (specName, state.generated)
+
+/--
+Specialize the definition named `fname` and add `fname._spec` to the environment.
+
+Returns the top-level generated name together with generated callee
+specializations. This is the implementation behind `#sas`.
+-/
+def specializeConst (fname : Name) (attrs : Array Name := #[`simp])
+    (config : Simp.Config := { zeta := false, zetaDelta := false, iota := true }) : MetaM (Name × Array Name) := do
+  let simpTheorems ← attrs.mapM getSimpTheoremsFor
+  let simprocs ← attrs.mapM getSimprocsFor
+  specializeConstWith fname { config, simpTheorems, simprocs }
 
 end LeanSAS
