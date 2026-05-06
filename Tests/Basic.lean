@@ -140,6 +140,10 @@ fun b => b -/
 #guard_msgs in
 #print boolNotNotOnly._spec
 
+/-- info: LeanSASTests.boolNotNot._spec.eq_thm (b : Bool) : boolNotNot._spec b = boolNotNot b -/
+#guard_msgs in
+#check boolNotNot._spec.eq_thm
+
 def boolNotNotNoSimp (b : Bool) := !(!b)
 
 #sas [-Bool.not_not] boolNotNotNoSimp
