@@ -1,0 +1,15 @@
+name = "LeanSAS"
+version = "0.1.0"
+defaultTargets = ["leansas"]
+testDriver = "tests"
+
+[[lean_lib]]
+name = "LeanSAS"
+
+[[lean_exe]]
+name = "leansas"
+root = "Main"
+
+[[lean_exe]]
+name = "tests"
+root = "Tests.Basic"
