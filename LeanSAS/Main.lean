@@ -16,6 +16,83 @@ This is just `Eq.refl lhs`, but the kernel will check defeq.
 def mkProofByDefEq (lhs : Expr) : MetaM Expr := do
   mkEqRefl lhs
 
+/-- Compose two optional equality proofs, treating missing proofs as reflexive steps. -/
+def composeEqProofs (p1 p2 : Option Expr) : MetaM (Option Expr) := do
+  match p1, p2 with
+  | none, p => pure p
+  | p, none => pure p
+  | some p1, some p2 => some <$> mkEqTrans p1 p2
+
+namespace SimpResult
+
+/-- Compose two consecutive simplification/specialization results. -/
+def trans (r1 r2 : Simp.Result) : MetaM Simp.Result := do
+  return { expr := r2.expr, proof? := (← composeEqProofs r1.proof? r2.proof?) }
+
+/-- Replace a result's expression and append an optional equality proof for the replacement. -/
+def transExpr (r : Simp.Result) (expr : Expr) (proof? : Option Expr) : MetaM Simp.Result := do
+  return { expr, proof? := (← composeEqProofs r.proof? proof?) }
+
+end SimpResult
+
+/-- Run proof-producing code conservatively: log failures and continue without a proof. -/
+def tryMkProof? (where_ : String) (x : MetaM Expr) : SasM (Option Expr) := do
+  try
+    some <$> x
+  catch e =>
+    trace[LeanSAS.sas] "{where_} failed: {e.toMessageData}"
+    pure none
+
+/-- Turn a body equality proof into a lambda equality proof using function extensionality. -/
+def mkLambdaCongrProof? (where_ : String) (xs : Array Expr) (bodyProof : Expr) : SasM (Option Expr) :=
+  tryMkProof? where_ do
+    let bodyProofLam ← mkLambdaFVars xs bodyProof
+    mkFunExt bodyProofLam
+
+/-- Compose the proof from pre-simplifying a lambda with the proof from transforming its body. -/
+def mkLambdaTransformProof? (xs : Array Expr) (simpProof? bodyProof? : Option Expr) : SasM (Option Expr) := do
+  match simpProof?, bodyProof? with
+  | some simpProof, some bodyProof =>
+    let lamProof? ← mkLambdaCongrProof? "lambda congruence" xs bodyProof
+    composeEqProofs (some simpProof) lamProof?
+  | some simpProof, none =>
+    pure (some simpProof)
+  | none, some bodyProof =>
+    mkLambdaCongrProof? "lambda congruence" xs bodyProof
+  | none, none =>
+    pure none
+
+/-- Build a real lambda over a let-bound fvar; `mkLambdaFVars` would rebuild a let. -/
+def mkLambdaOverLetFVar (n : Name) (xType x body : Expr) : MetaM Expr := do
+  let absBody := body.abstract #[x]
+  return .lam n xType absBody .default
+
+/--
+Build the congruence proof for transforming a let value and/or let body.
+
+The proof uses the definitionally equal view `let x := v; b` as `(fun x => b) v`.
+-/
+def mkLetTransformProof?
+    (n : Name) (xType x originalValue originalBody : Expr)
+    (valueProof? bodyProof? : Option Expr) : SasM (Option Expr) := do
+  match valueProof?, bodyProof? with
+  | some valueProof, some bodyProof =>
+    tryMkProof? "let congruence" do
+      let bodyProofLam ← mkLambdaOverLetFVar n xType x bodyProof
+      let funEqProof ← mkFunExt bodyProofLam
+      mkCongr funEqProof valueProof
+  | some valueProof, none =>
+    tryMkProof? "let value congruence" do
+      let bodyFn ← mkLambdaOverLetFVar n xType x originalBody
+      mkCongrArg bodyFn valueProof
+  | none, some bodyProof =>
+    tryMkProof? "let body congruence" do
+      let bodyProofLam ← mkLambdaOverLetFVar n xType x bodyProof
+      let funEqProof ← mkFunExt bodyProofLam
+      mkCongrFun funEqProof originalValue
+  | none, none =>
+    pure none
+
 /--
 Core logic for generating a specialized function.
 
@@ -148,97 +225,25 @@ partial def transform (e : Expr) : SasM Simp.Result := do
   if (← isClass? type).isSome then return { expr := e }
   if (← inferType type).isProp then return { expr := e }
   let r ← simplify e
-  -- Compose two `Eq` proofs (handling `none`).
-  let composeEq (p1 p2 : Option Expr) : MetaM (Option Expr) := do
-    match p1, p2 with
-    | none, p => pure p
-    | p, none => pure p
-    | some p1, some p2 => some <$> mkEqTrans p1 p2
   match r.expr with
   | .app .. =>
       let r' ← transformApp r.expr
-      let proof? ← composeEq r.proof? r'.proof?
-      return { expr := r'.expr, proof? := proof? }
+      SimpResult.trans r r'
   | .lam .. =>
       lambdaTelescope r.expr fun xs body => do
         let bodyResult ← transform body
         let lam ← mkLambdaFVars xs bodyResult.expr
-
-        -- Build lambda congruence proof using function extensionality
-        -- (fun xs => body) = (fun xs => body') if ∀ xs, body = body'
-        let proof? : Option Expr ← do
-          match r.proof?, bodyResult.proof? with
-          | some simpProof, some bodyProof =>
-            -- Both simplification and transformation occurred
-            -- Compose: e = r.expr (simpProof) and r.expr = lam (by funext bodyProof)
-            try
-              let bodyProofLam ← mkLambdaFVars xs bodyProof
-              let lamProof ← mkFunExt bodyProofLam
-              some <$> mkEqTrans simpProof lamProof
-            catch e =>
-              trace[LeanSAS.sas] "lambda congruence (both) failed: {e.toMessageData}"
-              pure none
-          | some simpProof, none =>
-            -- Only simplification, no body transformation
-            pure (some simpProof)
-          | none, some bodyProof =>
-            -- Only body transformation, use funext
-            try
-              let bodyProofLam ← mkLambdaFVars xs bodyProof
-              some <$> mkFunExt bodyProofLam
-            catch e =>
-              trace[LeanSAS.sas] "lambda congruence (body) failed: {e.toMessageData}"
-              pure none
-          | none, none =>
-            pure none
-        return { expr := lam, proof? := proof? }
+        let proof? ← mkLambdaTransformProof? xs r.proof? bodyResult.proof?
+        return { expr := lam, proof? }
   | .letE n _t v b _nondep =>
       let vResult ← transform v
       let xType ← inferType vResult.expr
       withLetDecl n xType vResult.expr fun x => do
         let bResult ← transform (b.instantiate1 x)
         let letExpr ← mkLetFVars #[x] bResult.expr (generalizeNondepLet := false)
-
-        -- Build `fun x => body` over the let-bound fvar `x`. We can't use
-        -- `mkLambdaFVars` because it abstracts let-bound fvars as `let`
-        -- bindings, not lambdas — but the congruence lemmas need real lambdas.
-        let mkLamOverX (body : Expr) : MetaM Expr := do
-          let absBody := body.abstract #[x]
-          return .lam n xType absBody .default
-
-        -- Let congruence via beta/zeta defeq:
-        --   `let x := v in b` ≡ `(fun x => b) v`
-        let proof? : Option Expr ← do
-          match vResult.proof?, bResult.proof? with
-          | some vProof, some bProof =>
-            try
-              let bProofLam ← mkLamOverX bProof
-              let funEqProof ← mkFunExt bProofLam
-              let fullProof ← mkCongr funEqProof vProof
-              pure (some fullProof)
-            catch e =>
-              trace[LeanSAS.sas] "let congruence (both) failed: {e.toMessageData}"
-              pure none
-          | some vProof, none =>
-            try
-              let bodyFn ← mkLamOverX (b.instantiate1 x)
-              let proof ← mkCongrArg bodyFn vProof
-              pure (some proof)
-            catch e =>
-              trace[LeanSAS.sas] "let congruence (value) failed: {e.toMessageData}"
-              pure none
-          | none, some bProof =>
-            try
-              let bProofLam ← mkLamOverX bProof
-              let funEqProof ← mkFunExt bProofLam
-              let proof ← mkCongrFun funEqProof v
-              pure (some proof)
-            catch e =>
-              trace[LeanSAS.sas] "let congruence (body) failed: {e.toMessageData}"
-              pure none
-          | none, none =>
-            pure none
-        return { expr := letExpr, proof? := proof? }
+        let originalBody := b.instantiate1 x
+        let proof? ← mkLetTransformProof? n xType x v originalBody vResult.proof? bResult.proof?
+        return { expr := letExpr, proof? }
   | .proj _ _ s =>
       let sResult ← transform s
       let e' := r.expr.updateProj! sResult.expr
