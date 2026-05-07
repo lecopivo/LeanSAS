@@ -128,7 +128,7 @@ original call (when available).
 -/
 partial def specializeCall (fname : Name) (lvls : List Level) (args : Array Expr) : SasM Simp.Result := do
   withSpecializedArgs args fun s =>
-    mkSpecializationCore fname lvls [] s.runtimeVars s.runtimeVals s.bodyArgs s.hasStaticArg
+    mkSpecializationCore fname lvls (collectLevelParams lvls) s.runtimeVars s.runtimeVals s.bodyArgs s.hasStaticArg
 
 end
 

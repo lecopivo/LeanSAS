@@ -33,6 +33,17 @@ def collectLambdaCaptures (arg : Expr) : SasM (Array Expr) := do
   let fvarIds := lctx.sortFVarsByContextOrder (collectFVars {} arg).fvarIds
   return fvarIds.map Expr.fvar
 
+/-- Create generated runtime variables sequentially so later types may depend on earlier variables. -/
+partial def withRuntimeVars {α}
+    (runtimeVals runtimeTypes : Array Expr) (i : Nat) (runtimeVars : Array Expr)
+    (k : Array Expr → SasM α) : SasM α := do
+  if i < runtimeVals.size then
+    let type := runtimeTypes[i]!.replaceFVars (runtimeVals.extract 0 i) runtimeVars
+    withLocalDeclD `x type fun x =>
+      withRuntimeVars runtimeVals runtimeTypes (i + 1) (runtimeVars.push x) k
+  else
+    k runtimeVars
+
 /--
 Classify source call arguments for specialization.
 
@@ -42,8 +53,8 @@ deduplicated runtime parameters.
 -/
 def withSpecializedArgs {α}
     (args : Array Expr) (k : SpecializedArgs → SasM α) : SasM α := do
-  let mut runtimeDecls : Array (Name × Expr) := #[]
   let mut runtimeVals : Array Expr := #[]
+  let mut runtimeTypes : Array Expr := #[]
   let mut runtimeArgIdx : Array (Option Nat) := #[]
 
   for arg in args do
@@ -53,8 +64,8 @@ def withSpecializedArgs {α}
         let capture := capture.consumeMData
         if (← findRuntimeVal? runtimeVals capture).isNone then
           let t ← inferType capture
-          runtimeDecls := runtimeDecls.push (`x, t)
           runtimeVals := runtimeVals.push capture
+          runtimeTypes := runtimeTypes.push t
       runtimeArgIdx := runtimeArgIdx.push none
     else if argView.hasFVar then
       let idx ←
@@ -63,14 +74,14 @@ def withSpecializedArgs {α}
         else
           let t ← inferType argView
           let i := runtimeVals.size
-          runtimeDecls := runtimeDecls.push (`x, t)
           runtimeVals := runtimeVals.push argView
+          runtimeTypes := runtimeTypes.push t
           pure i
       runtimeArgIdx := runtimeArgIdx.push (some idx)
     else
       runtimeArgIdx := runtimeArgIdx.push none
 
-  withLocalDeclsD runtimeDecls fun runtimeVars => do
+  withRuntimeVars runtimeVals runtimeTypes 0 #[] fun runtimeVars => do
     let mut bodyArgs := #[]
     for i in [:args.size] do
       let arg := args[i]!

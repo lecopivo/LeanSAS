@@ -642,6 +642,142 @@ fun x => x
 example (x : Nat) : usesMatchCallee._spec x = usesMatchCallee x :=
   usesMatchCallee._spec.eq_thm x
 
+def applyPoly {α : Type} (f : α → Nat) (x : α) :=
+  f x
+
+def usePolyBool (b : Bool) :=
+  applyPoly (fun b => if b then 1 else 0) b
+
+#sas usePolyBool
+/-- info: def LeanSASTests.usePolyBool._spec : Bool → Nat :=
+fun b => applyPoly_sas_1 b -/
+#guard_msgs in
+#print usePolyBool._spec
+/-- info: def LeanSASTests.applyPoly_sas_1 : Bool → Nat :=
+fun x => if x = true then 1 else 0 -/
+#guard_msgs in
+#print applyPoly_sas_1
+/-- info: LeanSASTests.usePolyBool._spec.eq_thm (b : Bool) : usePolyBool._spec b = usePolyBool b -/
+#guard_msgs in
+#check usePolyBool._spec.eq_thm
+
+example (b : Bool) : usePolyBool._spec b = usePolyBool b :=
+  usePolyBool._spec.eq_thm b
+
+def applyTwoTypes {α : Type u} {β : Type v} (f : α → β → Nat) (a : α) (b : β) :=
+  f a b
+
+def useTwoTypesNatGeneral {β : Type v} (b : β) :=
+  applyTwoTypes (α := Nat) (β := β) (fun n _ => n + 1) 41 b
+
+#sas useTwoTypesNatGeneral
+/-- info: def LeanSASTests.useTwoTypesNatGeneral._spec.{v} : {β : Type v} → β → Nat :=
+fun {β} b => applyTwoTypes_sas_1 β b -/
+#guard_msgs in
+#print useTwoTypesNatGeneral._spec
+/-- info: def LeanSASTests.applyTwoTypes_sas_1.{v} : (x : Type v) → x → Nat :=
+fun x x_1 => 42 -/
+#guard_msgs in
+#print applyTwoTypes_sas_1
+/--
+info: LeanSASTests.useTwoTypesNatGeneral._spec.eq_thm.{v} {β : Type v} (b : β) :
+  useTwoTypesNatGeneral._spec b = useTwoTypesNatGeneral b
+-/
+#guard_msgs in
+#check useTwoTypesNatGeneral._spec.eq_thm
+
+example {β : Type v} (b : β) :
+    useTwoTypesNatGeneral._spec b = useTwoTypesNatGeneral b :=
+  useTwoTypesNatGeneral._spec.eq_thm b
+
+def applyWithToString {α : Type} [ToString α] (f : α → String) (x : α) :=
+  f x
+
+def useToStringNat (pref : String) (n : Nat) :=
+  applyWithToString (fun x => pref ++ toString x) n
+
+#sas useToStringNat
+/-- info: def LeanSASTests.useToStringNat._spec : String → Nat → String :=
+fun pref n => applyWithToString_sas_1 pref n -/
+#guard_msgs in
+#print useToStringNat._spec
+/-- info: def LeanSASTests.applyWithToString_sas_1 : String → Nat → String :=
+fun x x_1 => x ++ toString x_1 -/
+#guard_msgs in
+#print applyWithToString_sas_1
+/-- info: LeanSASTests.useToStringNat._spec.eq_thm (pref : String) (n : Nat) : useToStringNat._spec pref n = useToStringNat pref n -/
+#guard_msgs in
+#check useToStringNat._spec.eq_thm
+
+example (pref : String) (n : Nat) : useToStringNat._spec pref n = useToStringNat pref n :=
+  useToStringNat._spec.eq_thm pref n
+
+def finApply {n : Nat} (f : Fin n → Nat) (i : Fin n) :=
+  f i
+
+def finConcrete (i : Fin 5) :=
+  finApply (fun j => j.val + 1) i
+
+#sas finConcrete
+/-- info: def LeanSASTests.finConcrete._spec : Fin 5 → Nat :=
+fun i => finApply_sas_1 i -/
+#guard_msgs in
+#print finConcrete._spec
+/-- info: def LeanSASTests.finApply_sas_1 : Fin 5 → Nat :=
+fun x => ↑x + 1 -/
+#guard_msgs in
+#print finApply_sas_1
+/-- info: LeanSASTests.finConcrete._spec.eq_thm (i : Fin 5) : finConcrete._spec i = finConcrete i -/
+#guard_msgs in
+#check finConcrete._spec.eq_thm
+
+example (i : Fin 5) : finConcrete._spec i = finConcrete i :=
+  finConcrete._spec.eq_thm i
+
+def finDependentApply (n : Nat) (f : Fin n → Nat) (i : Fin n) :=
+  f i
+
+def finDependent (n : Nat) (i : Fin n) :=
+  finDependentApply n (fun j => j.val + n) i
+
+#sas finDependent
+/-- info: def LeanSASTests.finDependent._spec : (n : Nat) → Fin n → Nat :=
+fun n i => finDependentApply_sas_1 n i -/
+#guard_msgs in
+#print finDependent._spec
+/-- info: def LeanSASTests.finDependentApply_sas_1 : (x : Nat) → Fin x → Nat :=
+fun x x_1 => ↑x_1 + x -/
+#guard_msgs in
+#print finDependentApply_sas_1
+/-- info: LeanSASTests.finDependent._spec.eq_thm (n : Nat) (i : Fin n) : finDependent._spec n i = finDependent n i -/
+#guard_msgs in
+#check finDependent._spec.eq_thm
+
+example (n : Nat) (i : Fin n) : finDependent._spec n i = finDependent n i :=
+  finDependent._spec.eq_thm n i
+
+def finDpendentPartialApply := finDependent 2
+
+#sas finDpendentPartialApply
+/--
+info: def LeanSASTests.finDpendentPartialApply._spec : Fin 2 → Nat :=
+fun i => finDependent_sas_1 i
+-/
+#guard_msgs in
+#print finDpendentPartialApply._spec
+/--
+info: def LeanSASTests.finDependent_sas_1 : Fin 2 → Nat :=
+fun x => finDependentApply_sas_2 x
+-/
+#guard_msgs in
+#print finDependent_sas_1
+/--
+info: def LeanSASTests.finDependentApply_sas_2 : Fin 2 → Nat :=
+fun x => ↑x + 2
+-/
+#guard_msgs in
+#print finDependentApply_sas_2
+
 end LeanSASTests
 
 def main : IO Unit :=

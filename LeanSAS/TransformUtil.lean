@@ -37,4 +37,13 @@ def unfoldDefinition (e : Expr) (fname : Name) : SasM Expr := do
   catch _ =>
     return e
 
+/-- Level parameters that must be declared for a generated specialization. -/
+def collectLevelParams : List Level → List Name
+  | [] => []
+  | lvl :: lvls =>
+      let rest := collectLevelParams lvls
+      match lvl with
+      | .param n => if rest.contains n then rest else n :: rest
+      | _ => rest
+
 end LeanSAS
