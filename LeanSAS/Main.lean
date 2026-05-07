@@ -10,6 +10,13 @@ def mkTopSpecName (fname : Name) : Name :=
   fname.append `_spec
 
 /--
+Build a proof that `lhs = rhs` given that they are definitionally equal.
+This is just `Eq.refl lhs`, but the kernel will check defeq.
+-/
+def mkProofByDefEq (lhs : Expr) : MetaM Expr := do
+  mkEqRefl lhs
+
+/--
 Core logic for generating a specialized function.
 
 Given a function name, level parameters, runtime variables and their corresponding values,
@@ -83,27 +90,31 @@ def mkSpecializationCore
     -- We need to prove: lhs = rhs where
     -- - lhs = specName runtimeVars ≡ bodyResult.expr (by definition)
     -- - rhs = fname bodyArgs ≡ unfolded (by unfolding)
-    -- - bodyResult.proof?: unfolded = bodyResult.expr (for simple cases)
+    -- - bodyResult.proof?: unfolded = bodyResult.expr (if transformation occurred)
     --
-    -- Challenge: For complex expressions (e.g., let-bindings with nested transformations),
-    -- bodyResult.proof? may prove equality of a SUB-EXPRESSION, not the full expression.
-    -- Building full congruence proofs requires infrastructure similar to Lean's simp tactic.
-    --
-    -- TODO: Implement proper congruence proof construction for:
-    -- - Let expressions with transformed sub-expressions
-    -- - Lambda expressions with transformed bodies
-    -- - Complex nested structures
-    --
-    -- For now, we use sorry to at least generate correct theorem TYPES.
-    -- The transformation is semantically correct (verified by construction),
-    -- but the formal proof term is incomplete.
-    let proof ← mkSorry thmType false
+    -- Strategy:
+    -- 1. If bodyResult.proof? exists: use Eq.symm to get bodyResult.expr = unfolded
+    -- 2. Use definitional equality: lhs ≡ bodyResult.expr and rhs ≡ unfolded
+    -- 3. The kernel accepts the proof via defeq
+    let proof ←
+      if let some bodyProof := bodyResult.proof? then
+        -- bodyProof: unfolded = bodyResult.expr
+        -- We need: lhs = rhs where lhs ≡ bodyResult.expr and rhs ≡ unfolded
+        -- Use Eq.symm to get: bodyResult.expr = unfolded
+        -- The kernel will accept this as lhs = rhs via defeq
+        mkEqSymm bodyProof
+      else
+        -- No transformation, bodyResult.expr ≡ unfolded
+        -- So lhs ≡ bodyResult.expr ≡ unfolded ≡ rhs
+        mkProofByDefEq lhs
+
+    let finalProof ← mkLambdaFVars runtimeVars proof >>= instantiateMVars
 
     addAndCompile <| .thmDecl {
       name := thmName
       levelParams := levelParams,
       type := thmType,
-      value := proof
+      value := finalProof
     }
     trace[LeanSAS.sas] "generated equality theorem {thmName}"
     -- The theorem proves: specName args = fname args (spec = original)
@@ -137,53 +148,95 @@ partial def transform (e : Expr) : SasM Simp.Result := do
   if (← isClass? type).isSome then return { expr := e }
   if (← inferType type).isProp then return { expr := e }
   let r ← simplify e
+  -- Compose two `Eq` proofs (handling `none`).
+  let composeEq (p1 p2 : Option Expr) : MetaM (Option Expr) := do
+    match p1, p2 with
+    | none, p => pure p
+    | p, none => pure p
+    | some p1, some p2 => some <$> mkEqTrans p1 p2
   match r.expr with
-  | .app .. => transformApp r.expr
+  | .app .. =>
+      let r' ← transformApp r.expr
+      let proof? ← composeEq r.proof? r'.proof?
+      return { expr := r'.expr, proof? := proof? }
   | .lam .. =>
       lambdaTelescope r.expr fun xs body => do
         let bodyResult ← transform body
         let lam ← mkLambdaFVars xs bodyResult.expr
-        -- Proof: original lambda = simplified lambda (by r.proof?) then
-        -- simplified lambda = transformed lambda (by congruence)
+
+        -- Build lambda congruence proof using function extensionality
+        -- (fun xs => body) = (fun xs => body') if ∀ xs, body = body'
         let proof? : Option Expr ← do
-          if let some simpProof := r.proof? then
-            -- We have e = r.expr, and we transformed body under lambda
-            -- For now, compose with body transformation
-            if let some bodyProof := bodyResult.proof? then
-              -- Build congruence proof for lambda
-              try
-                some <$> mkLambdaFVars xs bodyProof
-              catch _ =>
-                pure none
-            else
-              pure (some simpProof)
-          else
-            if let some bodyProof := bodyResult.proof? then
-              try
-                some <$> mkLambdaFVars xs bodyProof
-              catch _ =>
-                pure none
-            else
+          match r.proof?, bodyResult.proof? with
+          | some simpProof, some bodyProof =>
+            -- Both simplification and transformation occurred
+            -- Compose: e = r.expr (simpProof) and r.expr = lam (by funext bodyProof)
+            try
+              let bodyProofLam ← mkLambdaFVars xs bodyProof
+              let lamProof ← mkFunExt bodyProofLam
+              some <$> mkEqTrans simpProof lamProof
+            catch e =>
+              trace[LeanSAS.sas] "lambda congruence (both) failed: {e.toMessageData}"
               pure none
+          | some simpProof, none =>
+            -- Only simplification, no body transformation
+            pure (some simpProof)
+          | none, some bodyProof =>
+            -- Only body transformation, use funext
+            try
+              let bodyProofLam ← mkLambdaFVars xs bodyProof
+              some <$> mkFunExt bodyProofLam
+            catch e =>
+              trace[LeanSAS.sas] "lambda congruence (body) failed: {e.toMessageData}"
+              pure none
+          | none, none =>
+            pure none
         return { expr := lam, proof? := proof? }
   | .letE n _t v b _nondep =>
       let vResult ← transform v
-      withLetDecl n (← inferType vResult.expr) vResult.expr fun x => do
+      let xType ← inferType vResult.expr
+      withLetDecl n xType vResult.expr fun x => do
         let bResult ← transform (b.instantiate1 x)
         let letExpr ← mkLetFVars #[x] bResult.expr (generalizeNondepLet := false)
-        -- Similar proof construction for let expressions
+
+        -- Build `fun x => body` over the let-bound fvar `x`. We can't use
+        -- `mkLambdaFVars` because it abstracts let-bound fvars as `let`
+        -- bindings, not lambdas — but the congruence lemmas need real lambdas.
+        let mkLamOverX (body : Expr) : MetaM Expr := do
+          let absBody := body.abstract #[x]
+          return .lam n xType absBody .default
+
+        -- Let congruence via beta/zeta defeq:
+        --   `let x := v in b` ≡ `(fun x => b) v`
         let proof? : Option Expr ← do
-          if let some vProof := vResult.proof? then
+          match vResult.proof?, bResult.proof? with
+          | some vProof, some bProof =>
             try
-              some <$> mkLetFVars #[x] vProof (generalizeNondepLet := false)
-            catch _ =>
+              let bProofLam ← mkLamOverX bProof
+              let funEqProof ← mkFunExt bProofLam
+              let fullProof ← mkCongr funEqProof vProof
+              pure (some fullProof)
+            catch e =>
+              trace[LeanSAS.sas] "let congruence (both) failed: {e.toMessageData}"
               pure none
-          else if let some bProof := bResult.proof? then
+          | some vProof, none =>
             try
-              some <$> mkLetFVars #[x] bProof (generalizeNondepLet := false)
-            catch _ =>
+              let bodyFn ← mkLamOverX (b.instantiate1 x)
+              let proof ← mkCongrArg bodyFn vProof
+              pure (some proof)
+            catch e =>
+              trace[LeanSAS.sas] "let congruence (value) failed: {e.toMessageData}"
               pure none
-          else
+          | none, some bProof =>
+            try
+              let bProofLam ← mkLamOverX bProof
+              let funEqProof ← mkFunExt bProofLam
+              let proof ← mkCongrFun funEqProof v
+              pure (some proof)
+            catch e =>
+              trace[LeanSAS.sas] "let congruence (body) failed: {e.toMessageData}"
+              pure none
+          | none, none =>
             pure none
         return { expr := letExpr, proof? := proof? }
   | .proj _ _ s =>

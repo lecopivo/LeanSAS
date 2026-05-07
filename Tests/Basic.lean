@@ -90,8 +90,8 @@ fun x y => x + y -/
 #print addWrap._spec
 
 def letExample (x : Nat) :=
-  let y := x + 1
-  let z := y + y
+  let y := 0 + x + 1
+  let z := y + (0 + y)
   z + y
 
 #sas (config := { zeta := false }) letExample
