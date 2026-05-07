@@ -31,6 +31,14 @@ f._spec
 
 The generated definition is extensionally the same computation as `f`, but its body is transformed by the specialization pass.
 
+For each generated specialization, LeanSAS also tries to add an equality theorem:
+
+```lean
+f._spec.eq_thm
+```
+
+The theorem states that the generated specialization computes the same value as the original declaration at each runtime argument.
+
 ## How It Works
 
 Given a function `f`, LeanSAS processes its body as follows:
@@ -40,8 +48,9 @@ Given a function `f`, LeanSAS processes its body as follows:
 3. When a call `g x1 ... xn` is found, decide whether `g` can be specialized.
 4. Arguments known at specialization time are baked into a generated specialization of `g`.
 5. Arguments that still depend on runtime variables remain parameters of the generated specialization.
-6. Replace the original call with a call to the generated specialization.
-7. Repeat the process recursively for newly generated specializations.
+6. Lambda arguments are treated as static templates; their captured free variables become deduplicated runtime parameters of the specialization.
+7. Replace the original call with a call to the generated specialization.
+8. Repeat the process recursively for newly generated specializations.
 
 For example, a source call like this:
 
@@ -64,6 +73,34 @@ scaleAdd._spec_1 x
 
 The body of `scaleAdd._spec_1` is then processed by the same specialization and simplification pass.
 
+Higher-order arguments are specialized too. For example:
+
+```lean
+def functionArgCallee (f : Nat → Nat) (x : Nat) :=
+  f x
+
+def functionArgTransform (x z : Nat) :=
+  functionArgCallee (fun y => 0 + y*z + x) x
+```
+
+may generate a callee specialization shaped like:
+
+```lean
+def functionArgCallee_sas_1 (x z : Nat) :=
+  x * z + x
+```
+
+The lambda itself is baked into the specialization, while the captured variables `x` and `z` become generated parameters. Captures are deduplicated against ordinary runtime arguments.
+
+When a specialized lambda uses its parameter nonlinearly, LeanSAS preserves sharing for nontrivial arguments by introducing a `let` before beta reduction. For example, specializing `f (expensive x)` with `fun y => a*y + b*y` produces a body shaped like:
+
+```lean
+let y := expensive._spec x
+a * y + b * y
+```
+
+instead of duplicating `expensive._spec x`.
+
 ## Simp Integration
 
 LeanSAS is designed to use Lean's existing simplifier as the user extension mechanism.
@@ -74,11 +111,11 @@ The intended command syntax includes normal `simp` configuration and theorem sel
 #sas (config := {...}) only [thm1, thm2] f
 ```
 
-The first implementation may start with the global `simp` set and add full syntax support after the core pass is working.
+The command supports ordinary `simp` attribute selection and configuration, including `only [...]`, added theorem sets, removed theorem sets, and `(config := ...)`.
 
-## First Version Scope
+## Current Scope
 
-The first version will deliberately be small and conservative.
+The current version is deliberately small and conservative, but it already supports the core specialization pass.
 
 In scope:
 
@@ -88,12 +125,16 @@ In scope:
 - Keep runtime-dependent arguments as parameters.
 - Run `simp` during transformation.
 - Generate real Lean declarations.
+- Generate equality theorems for generated specializations when proof construction succeeds.
+- Compose proof terms across simplification, application argument rewriting, lambda congruence, let congruence, and projection congruence.
+- Specialize lambda-valued arguments by extracting captured runtime variables.
+- Preserve sharing for nonlinear beta-redexes with nontrivial arguments.
 
-Out of scope for the first version:
+Still out of scope:
 
 - Recursive function specialization.
 - Complex type encoding.
-- Splitting one source argument into multiple generated arguments.
+- General splitting of source arguments into multiple generated arguments, except for lambda captures used by higher-order specialization.
 - OpenCL-specific behavior.
 - Primitive interpreter evaluation.
 - Direct compiler-pipeline integration.
@@ -120,7 +161,7 @@ This differs from the previous prototype, which tried to flatten structure-like 
 
 ## Example Targets
 
-Simple examples the first version should support:
+Simple examples supported by the current implementation:
 
 ```lean
 def addOne (x : Nat) := x + 1
@@ -145,6 +186,35 @@ def h (x : Nat) := g (x + 1)
 
 #sas h
 #check h._spec
+```
+
+Higher-order lambda specialization:
+
+```lean
+def functionArgCallee (f : Nat → Nat) (x : Nat) :=
+  f x
+
+def functionArgTransform (x z : Nat) :=
+  functionArgCallee (fun y => 0 + y*z + x) x
+
+#sas functionArgTransform
+#print functionArgTransform._spec
+#print functionArgCallee_sas_1
+```
+
+Sharing-preserving nonlinear beta specialization:
+
+```lean
+def expensiveInput (x : Nat) := x + 1
+
+def nonlinearFunctionArgCallee (f : Nat → Nat) (x : Nat) :=
+  f (expensiveInput x)
+
+def nonlinearFunctionArgTransform (a b x : Nat) :=
+  nonlinearFunctionArgCallee (fun y => a * y + b * y) x
+
+#sas (config := { zeta := false }) nonlinearFunctionArgTransform
+#print nonlinearFunctionArgCallee_sas_1
 ```
 
 ## Previous Attempt
