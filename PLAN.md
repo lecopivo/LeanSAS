@@ -82,9 +82,15 @@ This keeps function arities stable and makes the specialization pass easier to r
   - Generated specialization naming.
   - Declaration generation and equality theorem generation.
 
+- `LeanSAS/TransformUtil.lean`
+  - Conservative simplification wrapper.
+  - Specialization target selection.
+  - Definition unfolding helper.
+
 - `LeanSAS/Main.lean`
   - Core expression transformer.
   - Function call specialization.
+  - Mutual recursion between transformation and specialization generation.
   - Public specialization entry points.
 
 - `LeanSAS/Command.lean`
